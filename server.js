@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const { handler } = require('./whatsapp'); // tu función handler de whatsapp.js
