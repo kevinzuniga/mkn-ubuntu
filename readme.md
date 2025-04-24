@@ -1,3 +1,26 @@
+## para copiar los archivos a ec2
+rsync -avz \
+  -e "ssh -i mknkeypair.pem" \
+  --exclude='.git' \
+  ./mkn-ubuntu \
+  ubuntu@44.201.195.240:/home/ubuntu/
+
+## para eliminar la ejecucion
+sudo docker ps
+sudo docker stop ID/NAME
+sudo docker rm ID/NAME
+
+## para construir
+sudo docker build -t mkn-app .
+
+## para correr
+sudo docker run -d -p 80:3000 --env-file .env mkn-app
+
+## para los logs
+sudo docker ps
+sudo docker logs ID/NAME
+
+
 ## install docker
 sudo apt-get update
 sudo apt-get install -y ca-certificates curl gnupg

@@ -1,12 +1,26 @@
+// secrets.js
 const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
+const fs = require('fs').promises;
+const forge = require('node-forge');          // npm i node-forge
 
-const region = process.env.AWS_REGION || 'us-east-1';
-const secretsClient = new SecretsManagerClient({ region });
+const client = new SecretsManagerClient({ region: process.env.AWS_REGION });
 
-async function getSecretValue(secretName) {
-  const command = new GetSecretValueCommand({ SecretId: secretName });
-  const { SecretString, SecretBinary } = await secretsClient.send(command);
-  return SecretString || Buffer.from(SecretBinary, 'base64');
+async function getSecretValue(id) {
+  // Permite rutas locales también
+  if (id.startsWith('/')) return fs.readFile(id, 'utf8');
+
+  const { SecretString, SecretBinary } = await client.send(
+    new GetSecretValueCommand({ SecretId: id })
+  );
+  let raw = SecretString ?? Buffer.from(SecretBinary, 'base64').toString('utf8');
+
+  // Si viene como JSON (caso actual)
+  try {
+    const obj = JSON.parse(raw);
+    raw = Object.values(obj)[0];       // toma el primer valor PEM
+  } catch { /* no es JSON, deja igual */ }
+
+  return raw.trim();
 }
 
 module.exports = { getSecretValue };
