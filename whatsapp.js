@@ -146,7 +146,7 @@ async function handler(event) {
     // 6 model
     const modelObj = {
       formatVersion: 1,
-      passStyle: 'eventTicket',
+      // passStyle: 'eventTicket',
       passTypeIdentifier: APPLE_PASS_TYPE_ID,
       teamIdentifier: APPLE_TEAM_ID,
       organizationName: ORGANIZATION_NAME,
@@ -186,7 +186,8 @@ async function handler(event) {
     pass.images.add('logo', facePNG);           // aparece en esquina
     pass.images.add('logo@2x', facePNG);
     const dot = await fs.readFile(iconPath);
-    ['icon', 'icon@2x'].forEach(k => pass.addBuffer(k, dot));
+    ['icon', 'icon@2x'].forEach(k => pass.images.add(k, dot));
+    console.log('entries →', pass.list());
     const passBuf = await pass.getAsBuffer();
     log('pkpass bytes', passBuf.length);
     console.log('entries →', pass.list());   // debe listar strip.png, strip@2x.png, logo.png …
