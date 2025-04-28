@@ -120,6 +120,7 @@ async function handler(event) {
     log('facePNG bytes', facePNG.length);
     const faceKey = `faces/${msg.image.id}.png`;
     await s3.send(new PutObjectCommand({ Bucket: BUCKET_NAME, Key: faceKey, Body: facePNG, ContentType: 'image/png', ACL: 'public-read' }));
+    console.log('[DBG] faceKey on S3 →', faceKey);
 
     // 4 openai
     let fullName = 'N/A';
@@ -131,9 +132,11 @@ async function handler(event) {
       });
       const raw = ai.choices?.[0]?.message?.content;
       console.log('[OPENAI] content', raw);
+      console.log('[DBG] typeof raw:', typeof raw, '| value:', raw);
       if (raw) fullName = JSON.parse(raw).adultName || 'N/A';
     } catch (e) { log('openai fail', e.message); }
     log('fullName', fullName);
+    console.log('[DBG] Value that will be placed in primaryFields →', fullName);
 
     // 5 certs
     let [wwdrPem, certPem, keyPem] = await Promise.all([
@@ -155,13 +158,13 @@ async function handler(event) {
       foregroundColor: 'rgb(255,255,255)',
       backgroundColor: 'rgb(60,65,70)',
       labelColor: 'rgb(255,255,255)',
-      eventTicket: {                      // ← toda la info propia del pase
+      generic: {                      // ← toda la info propia del pase
         headerFields: [{ key: 'header', label: 'Digital ID', value: '' }],
         primaryFields: [{ key: 'name', label: 'Full Name', value: fullName }],
-        backFields: [
-          { key: 'date', label: 'Creado', value: new Date().toLocaleString('es-PE') },
-          { key: 'id', label: 'Imagen ID', value: msg.image.id }
-        ]
+        // backFields: [
+        //   { key: 'date', label: 'Creado', value: new Date().toLocaleString('es-PE') },
+        //   { key: 'id', label: 'Imagen ID', value: msg.image.id }
+        // ]
       },
       barcodes: [{
         format: 'PKBarcodeFormatQR',
@@ -170,27 +173,56 @@ async function handler(event) {
       }],
     };
 
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'pk-')); const modelDir = `${tmp}.pass`; await fs.mkdir(modelDir);
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'pk-'));
+    const modelDir = `${tmp}.pass`;
+    await fs.mkdir(modelDir);
+
+
     await fs.writeFile(path.join(modelDir, 'pass.json'), JSON.stringify(modelObj, null, 2));
-    const iconPath = path.join(__dirname, 'icon.png'); const logoPath = path.join(__dirname, 'logo.png');
-    await fs.copyFile(iconPath, path.join(modelDir, 'icon.png')); await fs.copyFile(logoPath, path.join(modelDir, 'logo.png'));
+
+    const assetsDir = path.join(__dirname, 'assets');   // <- carpeta con tus PNG
+    const copies = [
+      'icon.png', 'icon@2x.png',
+      'logo.png', 'logo@2x.png',
+      'thumbnail.png', 'thumbnail@2x.png',
+      // 'strip.png', 'strip@2x.png'
+    ];
+    await Promise.all(
+      copies.map(f =>
+        fs.copyFile(path.join(assetsDir, f), path.join(modelDir, f))
+      )
+    );
+    console.log('[DBG] Static images copied to modelDir →', copies);
+
+    await fs.writeFile(path.join(modelDir, 'thumbnail.png'), facePNG);
+    await fs.writeFile(path.join(modelDir, 'thumbnail@2x.png'), facePNG);
     
     console.log('DIR →', modelDir);
     console.log('FILES →', await fs.readdir(modelDir));
-    
     // 7 generate pass
     const pass = await PKPass.from({ model: modelDir, certificates: { wwdr: wwdrPem, signerCert: certPem, signerKey: keyPem } });
-    console.log('PKPass keys →', Object.keys(pass));   // debería incluir 'images'
-    pass.images.add('strip', facePNG);           // eventTicket mostrará strip
-    pass.images.add('strip@2x', facePNG);
-    pass.images.add('logo', facePNG);           // aparece en esquina
-    pass.images.add('logo@2x', facePNG);
-    const dot = await fs.readFile(iconPath);
-    ['icon', 'icon@2x'].forEach(k => pass.images.add(k, dot));
-    console.log('entries →', pass.list());
+    console.log('[DBG] PKPass instance created. images API available →', !!pass.images);
+    console.log('pass.images →', typeof pass.images);      // debería imprimir 'object'
+    console.log('tiene add?  →', !!pass.images?.add);      // true
+    // console.log('PKPass keys →', Object.keys(pass));   // debería incluir 'images'
+
+    if (pass.images && typeof pass.images.add === 'function') {
+      pass.images.add('thumbnail', facePNG);
+      pass.images.add('thumbnail@2x', facePNG);
+
+      pass.images.add('logo', await fs.readFile(logoPath));
+      pass.images.add('logo@2x', await fs.readFile(logo2xPath));
+
+      pass.images.add('icon', await fs.readFile(iconPath));
+      pass.images.add('icon@2x', await fs.readFile(icon2xPath));
+    } else {
+      log('⚠️  esta build no soporta pass.images.add');
+    }
+
+    // console.log('entries →', pass.list());
     const passBuf = await pass.getAsBuffer();
     log('pkpass bytes', passBuf.length);
-    console.log('entries →', pass.list());   // debe listar strip.png, strip@2x.png, logo.png …
+    // console.log('entries →', pass.list());   // debe listar strip.png, strip@2x.png, logo.png …
 
     const passKey = `passes/${msg.image.id}.pkpass`;
     await s3.send(new PutObjectCommand({ Bucket: BUCKET_NAME, Key: passKey, Body: passBuf, ContentType: 'application/vnd.apple.pkpass', ACL: 'public-read' }));

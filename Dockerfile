@@ -7,9 +7,13 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive \
     curl ca-certificates build-essential openssl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js 22 using NodeSource repository
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y nodejs
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive \
+    apt-get install -y --no-install-recommends jq
+
+# 2. Repositorio oficial Node 20 LTS
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get update && apt-get install -y nodejs && \
+    node -v   # => para ver en el log que quedó 20.x
 
 # Set up OpenSSL config
 RUN printf '%s\n' \
@@ -28,6 +32,7 @@ ENV OPENSSL_CONF=/etc/ssl/openssl.cnf
 
 WORKDIR /app
 
+COPY assets/*.png ./
 COPY package*.json ./
 RUN npm ci --omit=dev
 

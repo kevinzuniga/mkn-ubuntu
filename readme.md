@@ -12,11 +12,13 @@ sudo docker rm ID/NAME
 
 ## para construir
 sudo docker build -t mkn-app .
+docker build --no-cache -t mkn-app .
 
 ## para correr
-sudo docker run -d -p 80:3000 --env-file .env mkn-app
+sudo docker run -d -p 80:3000 --env-file .env --name mkn mkn-app
 
 ## para los logs
+sudo docker logs -f mkn
 sudo docker ps
 sudo docker logs ID/NAME
 
@@ -49,3 +51,17 @@ docker --version
 ## (Opcional) Permitir usar Docker sin sudo
 sudo usermod -aG docker $USER
 newgrp docker
+
+
+
+
+# borra contenedores / imágenes previas si quieres
+sudo docker container prune -f
+sudo docker image prune -f
+
+# reconstruye sin cache para que realmente baje Node 20
+sudo docker build --no-cache -t mkn-app .
+
+# lanza el contenedor
+sudo docker run -d -p 80:3000 --env-file .env --name mkn mkn-app
+sudo docker logs -f mkn
