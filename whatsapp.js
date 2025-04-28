@@ -14,6 +14,18 @@ const OpenAI = require('openai');
 const forge = require('node-forge');
 const jsQR = require('jsqr');
 const { getSecretValue } = require('./secrets');
+const { execFile } = require('node:child_process');
+const tmp = require('tmp-promise');
+
+async function decodeQRWithZbar(buffer) {
+  const { path, cleanup } = await tmp.file({ postfix: '.jpg' });
+  await fs.writeFile(path, buffer);
+  try {
+    const { stdout } = await execFile('zbarimg', ['--quiet', '--raw', path]);
+    return stdout.trim();        // devuelve sólo el payload
+  } catch { return null; }
+  finally { cleanup(); }
+}
 
 // ———‑‑ ENV ———‑‑
 const {
@@ -119,38 +131,25 @@ async function handler(event) {
     const facePNG = await j.crop(x, y, w, h).getBufferAsync(Jimp.MIME_PNG);
 
     // ensure we have RGBA data
-    const qrImg = j.clone();
-    let qrRegion = qrImg.contrast(0.5);  // increase contrast
-    qrRegion = qrRegion.greyscale();  // convert to grayscale
-    const { data, width, height } = qrRegion.bitmap;
-    const qr = jsQR(new Uint8ClampedArray(data), width, height);
-    let qrPayload = null;
-    if (qr) { qrPayload = qr.data; }
-    else {
-      const imgUrl = `https://${BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${rawKey}`;
-      const ai = await openai.chat.completions.create({
-        model: 'gpt-4o',
-        max_tokens: 40,
-        response_format: { type: 'json_object' },
-        messages: [
-          {
-            role: 'system',
-            content: 'Eres un lector de códigos QR.'
-          },
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: 'Devuélveme SOLO JSON {"qr":"<texto>"} sin explicar nada.' },
-              {
-                type: 'image_url',
-                image_url: { url: imgUrl /* el mismo rawKey en S3 */ }
-              }
-            ]
-          }
-        ]
-      });
-      qrPayload = ai.choices?.[0]?.message?.content || null;
-      console.log('[DBG] QR via OpenAI →', qrPayload);
+    let qrPayload = await decodeQRWithZbar(mediaBuf);
+    if (!qrPayload) {
+      const { path: tmpPath, cleanup } = await tmp.file({ postfix: '.jpg' });
+      await fs.writeFile(tmpPath, mediaBuf);
+      try {
+        const { stdout } = await execFile('python3', ['scan_qr.py', tmpPath]);
+        if (stdout) {
+          qrPayload = stdout.trim();
+          console.log('[DBG] pyzbar (Python) encontró QR:', qrPayload);
+        } else {
+          console.log('[DBG] pyzbar tampoco encontró QR');
+        }
+      } catch (err) {
+        console.log('[DBG] error en scan_qr.py:', err.message);
+      } finally {
+        await cleanup();
+      }
+    } else {
+      console.log('[DBG] ZBar encontró QR', qrPayload);
     }
 
     log('facePNG bytes', facePNG.length);
