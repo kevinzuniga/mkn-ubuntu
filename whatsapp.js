@@ -12,6 +12,7 @@ const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { RekognitionClient, DetectFacesCommand } = require('@aws-sdk/client-rekognition');
 const OpenAI = require('openai');
 const forge = require('node-forge');
+const jsQR = require('jsqr');
 const { getSecretValue } = require('./secrets');
 
 // ———‑‑ ENV ———‑‑
@@ -117,6 +118,41 @@ async function handler(event) {
     const h = Math.min(H - y, Math.floor(big.Height * H * scale));
     const facePNG = await j.crop(x, y, w, h).getBufferAsync(Jimp.MIME_PNG);
 
+    // ensure we have RGBA data
+    const qrImg = j.clone();
+    let qrRegion = qrImg.contrast(0.5);  // increase contrast
+    qrRegion = qrRegion.greyscale();  // convert to grayscale
+    const { data, width, height } = qrRegion.bitmap;
+    const qr = jsQR(new Uint8ClampedArray(data), width, height);
+    let qrPayload = null;
+    if (qr) { qrPayload = qr.data; }
+    else {
+      const imgUrl = `https://${BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${rawKey}`;
+      const ai = await openai.chat.completions.create({
+        model: 'gpt-4o',
+        max_tokens: 40,
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content: 'Eres un lector de códigos QR.'
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Devuélveme SOLO JSON {"qr":"<texto>"} sin explicar nada.' },
+              {
+                type: 'image_url',
+                image_url: { url: imgUrl /* el mismo rawKey en S3 */ }
+              }
+            ]
+          }
+        ]
+      });
+      qrPayload = ai.choices?.[0]?.message?.content || null;
+      console.log('[DBG] QR via OpenAI →', qrPayload);
+    }
+
     log('facePNG bytes', facePNG.length);
     const faceKey = `faces/${msg.image.id}.png`;
     await s3.send(new PutObjectCommand({ Bucket: BUCKET_NAME, Key: faceKey, Body: facePNG, ContentType: 'image/png', ACL: 'public-read' }));
@@ -125,15 +161,25 @@ async function handler(event) {
     // 4 openai
     let fullName = 'N/A';
     try {
+      const imgUrl = `https://${BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${rawKey}`;
       const ai = await openai.chat.completions.create({
         model: 'gpt-4o',
-        messages: [{ role: 'user', content: [{ type: 'text', text: 'Devuélveme JSON {"adultName"}.' }, { type: 'image_url', image_url: { url: `data:image/png;base64,${mediaBuf.toString('base64')}` } }] }],
-        max_tokens: 60, response_format: { type: 'json_object' }
+        messages: [
+          {
+            role: 'user',
+            content: 'Devuélveme SOLO JSON {"adultName":"<nombre completo>"}'
+          },
+          {
+            role: 'user',
+            content: [{ type: 'image_url', image_url: { url: imgUrl } }]
+          }
+        ],
+        max_tokens: 120, response_format: { type: 'json_object' }
       });
-      const raw = ai.choices?.[0]?.message?.content;
-      console.log('[OPENAI] content', raw);
-      console.log('[DBG] typeof raw:', typeof raw, '| value:', raw);
-      if (raw) fullName = JSON.parse(raw).adultName || 'N/A';
+      console.log('[OPENAI] response', ai);
+      const payload = ai.choices?.[0]?.message?.content || '{}';
+      fullName = JSON.parse(payload).adultName || 'N/A';
+      console.log('[OPENAI] payload', payload);
     } catch (e) { log('openai fail', e.message); }
     log('fullName', fullName);
     console.log('[DBG] Value that will be placed in primaryFields →', fullName);
@@ -161,6 +207,9 @@ async function handler(event) {
       generic: {                      // ← toda la info propia del pase
         headerFields: [{ key: 'header', label: 'Digital ID', value: '' }],
         primaryFields: [{ key: 'name', label: 'Full Name', value: fullName }],
+        secondaryFields: qrPayload
+          ? [{ key: 'qr', label: 'Código', value: qrPayload }]
+          : []
         // backFields: [
         //   { key: 'date', label: 'Creado', value: new Date().toLocaleString('es-PE') },
         //   { key: 'id', label: 'Imagen ID', value: msg.image.id }
@@ -168,7 +217,7 @@ async function handler(event) {
       },
       barcodes: [{
         format: 'PKBarcodeFormatQR',
-        message: `ID-${msg.image.id}`,   // lo que desees codificar
+        message: qrPayload || `ID-${msg.image.id}`,
         messageEncoding: 'iso-8859-1'    // requerido
       }],
     };
@@ -196,14 +245,14 @@ async function handler(event) {
 
     await fs.writeFile(path.join(modelDir, 'thumbnail.png'), facePNG);
     await fs.writeFile(path.join(modelDir, 'thumbnail@2x.png'), facePNG);
-    
+
     console.log('DIR →', modelDir);
     console.log('FILES →', await fs.readdir(modelDir));
     // 7 generate pass
     const pass = await PKPass.from({ model: modelDir, certificates: { wwdr: wwdrPem, signerCert: certPem, signerKey: keyPem } });
-    console.log('[DBG] PKPass instance created. images API available →', !!pass.images);
-    console.log('pass.images →', typeof pass.images);      // debería imprimir 'object'
-    console.log('tiene add?  →', !!pass.images?.add);      // true
+    // console.log('[DBG] PKPass instance created. images API available →', !!pass.images);
+    // console.log('pass.images →', typeof pass.images);      // debería imprimir 'object'
+    // console.log('tiene add?  →', !!pass.images?.add);      // true
     // console.log('PKPass keys →', Object.keys(pass));   // debería incluir 'images'
 
     if (pass.images && typeof pass.images.add === 'function') {
