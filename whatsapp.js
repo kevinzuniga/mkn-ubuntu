@@ -8,14 +8,17 @@ const os = require('os');
 const crypto = require('crypto');
 const Jimp = require('jimp');
 const { PKPass } = require('passkit-generator');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, HeadObjectCommand } = require('@aws-sdk/client-s3');
 const { RekognitionClient, DetectFacesCommand } = require('@aws-sdk/client-rekognition');
 const OpenAI = require('openai');
 const forge = require('node-forge');
 const jsQR = require('jsqr');
 const { getSecretValue } = require('./secrets');
-const { execFile } = require('node:child_process');
+const { execFile: execFileCallback } = require('child_process');
+const { promisify } = require('util');
+const execFile = promisify(execFileCallback);
 const tmp = require('tmp-promise');
+const FormData = require('form-data');
 
 async function decodeQRWithZbar(buffer) {
   const { path, cleanup } = await tmp.file({ postfix: '.jpg' });
@@ -98,10 +101,28 @@ async function handler(event) {
     return { statusCode: 200, body: 'non-image or status' };
   }
 
-  if (processed.has(msg.id)) { log('skip duplicate', msg.id); return { statusCode: 200, body: 'dup' }; }
-  processed.add(msg.id);
+  // --- duplicado en memoria (durante vida del contenedor) ---
+  if (processed.has(msg.id)) {
+    log('skip duplicate in-memory', msg.id);
+    return { statusCode: 200, body: 'dup-mem' };
+  }
 
   log('incoming msg id', msg.id);
+
+  // --- duplicado persistente (ya existe el .pkpass en S3) ---
+  const passKey = `passes/${msg.image.id}.pkpass`;
+  try {
+    await s3.send(new HeadObjectCommand({ Bucket: BUCKET_NAME, Key: passKey }));
+    // Si no lanza, el objeto existe → saltamos
+    log('pass already exists in S3, skipping generation for', msg.id);
+    return { statusCode: 200, body: 'already processed' };
+  } catch (err) {
+    if (err.name !== 'NotFound') throw err; // error real de S3
+    // Si es NotFound seguimos, porque no se ha generado aún
+  }
+
+  // Ahora sí lo marcamos en memoria para evitar re-entradas en esta ejecución
+  processed.add(msg.id);
   const sender = msg.from;
   if (msg.type !== 'image') { await sendText(sender, 'Envía una imagen.'); return { statusCode: 200, body: 'non‑image' }; }
 
@@ -221,8 +242,9 @@ async function handler(event) {
       }],
     };
 
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'pk-'));
-    const modelDir = `${tmp}.pass`;
+    // 7 generate pass
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pk-'));
+    const modelDir = `${tempDir}.pass`;
     await fs.mkdir(modelDir);
 
 
@@ -264,7 +286,7 @@ async function handler(event) {
       pass.images.add('icon', await fs.readFile(iconPath));
       pass.images.add('icon@2x', await fs.readFile(icon2xPath));
     } else {
-      log('⚠️  esta build no soporta pass.images.add');
+      // log('⚠️  esta build no soporta pass.images.add');
     }
 
     // console.log('entries →', pass.list());
@@ -272,10 +294,27 @@ async function handler(event) {
     log('pkpass bytes', passBuf.length);
     // console.log('entries →', pass.list());   // debe listar strip.png, strip@2x.png, logo.png …
 
+    /* --- subir el .pkpass --- */
     const passKey = `passes/${msg.image.id}.pkpass`;
     await s3.send(new PutObjectCommand({ Bucket: BUCKET_NAME, Key: passKey, Body: passBuf, ContentType: 'application/vnd.apple.pkpass', ACL: 'public-read' }));
     const url = `https://${BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${passKey}`;
-    await sendText(sender, `¡Tu pase está listo! Descárgalo aquí: ${url}`);
+    /* --- enviar el mensaje con el archivo --- */
+    await axios.post(
+      `https://graph.facebook.com/${API_VERSION}/${WA_PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        to: sender,
+        type: 'document',
+        document: {
+          link: url,                      // ← aquí va el enlace público
+          filename: 'wallet-pass.pkpass',
+          caption: '¡Tu pase digital está listo! Descárgalo y ábrelo en Wallet 📲'
+        }
+      },
+      { headers: { Authorization: `Bearer ${WA_CLOUD_API_ACCESS_TOKEN}` } }
+    );
+    
+    // await sendText(sender, `¡Tu pase está listo! Descárgalo aquí: ${url}`);
     return { statusCode: 200, body: JSON.stringify({ passUrl: url }) };
   } catch (err) { log('fatal', err); await sendText(sender, 'Error generando tu pase'); return { statusCode: 500, body: err.message } }
 }

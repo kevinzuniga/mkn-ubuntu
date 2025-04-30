@@ -4,9 +4,15 @@ FROM ubuntu:22.04
 # Install base dependencies (excluding default nodejs/npm)
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive \
     apt-get install -y --no-install-recommends \
-    python3-pip && pip3 install pillow pyzbar \
-    curl ca-certificates build-essential openssl \
-    zbar-tools libzbar0 imagemagick \
+    python3-pip \
+    curl \
+    ca-certificates \
+    build-essential \
+    openssl \
+    zbar-tools \
+    libzbar0 \
+    imagemagick \
+    && pip3 install pillow pyzbar \
     && rm -rf /var/lib/apt/lists/*
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive \
