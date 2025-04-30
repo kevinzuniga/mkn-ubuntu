@@ -215,31 +215,36 @@ async function handler(event) {
     // 6 model
     const modelObj = {
       formatVersion: 1,
-      // passStyle: 'eventTicket',
       passTypeIdentifier: APPLE_PASS_TYPE_ID,
       teamIdentifier: APPLE_TEAM_ID,
       organizationName: ORGANIZATION_NAME,
       description: 'Digital ID',
       serialNumber: `pass-${msg.image.id}-${Date.now()}`,
-      foregroundColor: 'rgb(255,255,255)',
-      backgroundColor: 'rgb(60,65,70)',
-      labelColor: 'rgb(255,255,255)',
-      generic: {                      // ← toda la info propia del pase
-        headerFields: [{ key: 'header', label: 'Digital ID', value: '' }],
-        primaryFields: [{ key: 'name', label: 'Full Name', value: fullName }],
-        secondaryFields: qrPayload
-          ? [{ key: 'qr', label: 'Código', value: qrPayload }]
-          : []
-        // backFields: [
-        //   { key: 'date', label: 'Creado', value: new Date().toLocaleString('es-PE') },
-        //   { key: 'id', label: 'Imagen ID', value: msg.image.id }
-        // ]
+
+      // Colores para que se parezca al ejemplo (tono marrón‑dorado)
+      foregroundColor: 'rgb(255,255,255)',        // valores en negro para el texto
+      backgroundColor: 'rgb(199,154,110)',   // #C79A6E aprox
+      labelColor: 'rgb(0,0,0)',
+
+      generic: {
+        // Encabezado con el logo: campo vacío para que no aparezca texto
+        headerFields: [],
+
+        // Solo mostramos el nombre
+        primaryFields: [
+          { key: 'name', label: 'FULL NAME', value: fullName }
+        ],
+
+        // Ningún otro campo visible
+        secondaryFields: []
       },
+
+      // El código QR sigue estando en la sección dedicada
       barcodes: [{
         format: 'PKBarcodeFormatQR',
         message: qrPayload || `ID-${msg.image.id}`,
-        messageEncoding: 'iso-8859-1'    // requerido
-      }],
+        messageEncoding: 'iso-8859-1'
+      }]
     };
 
     // 7 generate pass
@@ -252,16 +257,18 @@ async function handler(event) {
 
     const assetsDir = path.join(__dirname, 'assets');   // <- carpeta con tus PNG
     const copies = [
-      'icon.png', 'icon@2x.png',
-      'logo.png', 'logo@2x.png',
-      'thumbnail.png', 'thumbnail@2x.png',
-      // 'strip.png', 'strip@2x.png'
+      'logo.png', 'logo@2x.png',        // usarás tu archivo IMG_4756.PNG renombrado a logo.png
+      'icon.png', 'icon@2x.png',        // duplicados del logo para el ícono
+      'thumbnail.png', 'thumbnail@2x.png'
     ];
     await Promise.all(
       copies.map(f =>
         fs.copyFile(path.join(assetsDir, f), path.join(modelDir, f))
       )
     );
+    // si no tienes icon.png explícito, duplica el logo como icon
+    // await fs.copyFile(path.join(assetsDir, 'logo.png'), path.join(modelDir, 'icon.png')).catch(()=>{});
+    // await fs.copyFile(path.join(assetsDir, 'logo@2x.png'), path.join(modelDir, 'icon@2x.png')).catch(()=>{});
     console.log('[DBG] Static images copied to modelDir →', copies);
 
     await fs.writeFile(path.join(modelDir, 'thumbnail.png'), facePNG);
